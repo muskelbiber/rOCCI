@@ -11,7 +11,7 @@ module Occi
 
         # TODO: Implement scenarios for client
       end
-=begin
+
       before(:all) do
         @client = Occi::Api::ClientAmqp.new("http://localhost:9292/", auth_options = { :type => "none" },
                                             log_options = { :out => STDERR, :level => Occi::Log::WARN, :logger => nil },
@@ -19,6 +19,10 @@ module Occi
       end
 
       it "initialize and connect client" do
+        require "occi/amqp/message"
+        message = Occi::Amqp::Message.new
+        message.type = "test"
+
         @client.connected.should be_true
 
         @client.model.actions  .should have_at_least(1).actions
@@ -39,17 +43,29 @@ module Occi
         uri_new.should include('/compute/')
         @client.last_response_status.should == 201
 
+        @client.delete "compute"
+        @client.delete "/"
+        @client.delete
+        @client.delete "http://localhost:9292/compute/28a04cfa-2da7-11e2-b478-406c8ffffe84"
+
+        res.mixins = Occi::Core::Mixins.new
         res.title = "MyComputeResource2"
         uri_new = @client.create res
         uri_new.should include('/compute/')
         @client.last_response_status.should == 201
 
+
+
+
       end
+
 
       it "list /" do
         list = @client.list
         list.should have_at_least(1).list
       end
+
+=begin
 
       it "list compute" do
         list = @client.list "compute"
@@ -113,6 +129,38 @@ module Occi
         @resource   = description[0].resources.first
 
         @resource.attributes.occi.compute.state.should == "inactive"
+      end
+
+      it "trigger compute start" do
+        list = @client.list "compute"
+        list.should have_at_least(1).list
+
+        list.each do |key, value|
+          description = @client.describe key
+          @compute = key
+          @resource    = description[0].resources.first
+
+          if @resource.attributes.occi.compute.state == "inactive"
+            break
+          end
+        end
+
+        @resource.actions.each do |key , value|
+          if key.term == "start"
+            @action = key
+            break
+          end
+        end
+
+        @action.should_not be_nil, "action is nil"
+        @action.term.should == "start"
+
+        @client.trigger(@compute, @action.to_s)
+
+        description = @client.describe @compute
+        @resource   = description[0].resources.first
+
+        @resource.attributes.occi.compute.state.should == "active"
       end
 
       it "delete compute/uuid" do

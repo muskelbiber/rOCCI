@@ -5,14 +5,15 @@ require "json"
 module Occi
   module Api
     class ClientAmqp
-      attr_reader :endpoint, :auth_options, :connected, :last_response_status
+      attr_reader :endpoint, :auth_options, :connected, :last_response_status, :channel
       attr_accessor :media_type, :model
 
       CONNECTION_SETTING = {
-          :host => 'localhost', #IP of the MessageBroker (RabbitMQ)
+          :host => '10.108.16.13', #'192.168.56.101', #'10.108.16.15', #IP of the MessageBroker (RabbitMQ)
           :port => 5672,
-          :vhost => '/' ,
-          :password => 'password'
+          :password => 'cloud4E_pw', #stack
+          :user => 'cloud4E_user',
+          :vhost => 'cloud4E'
       }
 
       # hash mapping HTTP response codes to human-readable messages
@@ -225,6 +226,7 @@ module Occi
         # is this entity valid?
         entity.model = @model
         entity.check
+
         kind = entity.kind
         raise "No kind found for #{entity}" unless kind
 
@@ -240,6 +242,51 @@ module Occi
         response_value(post(location, collection), is_wait, is_parse_response)
       end
 
+      def update(entity, is_wait = true, is_parse_response = true)
+        # check some basic pre-conditions
+        raise "Endpoint is not connected!" unless @connected
+        raise "#{entity} not an entity" unless entity.kind_of? Occi::Core::Entity
+
+        # is this entity valid?
+        entity.model = @model
+        entity.check
+
+        kind = entity.kind
+        raise "No kind found for #{entity}" unless kind
+
+        # get location for this kind of entity
+        location   = entity.location
+        collection = Occi::Collection.new
+
+        # is this entity a Resource or a Link?
+        collection.resources << entity if entity.kind_of? Occi::Core::Resource
+        collection.links << entity if entity.kind_of? Occi::Core::Link
+
+        # make the request
+        response_value(put(location, collection), is_wait, is_parse_response)
+      end
+
+      def addMixin(location, collection, is_wait = true, is_parse_response = true)
+        raise "Endpoint is not connected!" unless @connected
+        #raise "#{mixin} not an entity" unless mixin.kind_of? Occi::Core::Mixin
+
+        old_media_type = @media_type
+        @media_type = "text/uri-list"
+
+        response_value(post(location, collection), is_wait, is_parse_response)
+
+        @media_type = old_media_type
+      end
+
+      def registerMixin(collection)
+        raise "Endpoint is not connected!" unless @connected
+        raise "#{collection} not an entity" unless collection.kind_of? Occi::Collection
+
+        response_value(post("/-/", collection), true, true)
+
+        set_model
+      end
+
       # Deletes a resource or all resource of a certain resource type
       # from the server.
       #
@@ -250,26 +297,16 @@ module Occi
       #
       # @param [String] resource type identifier, type name or location
       # @return [Boolean] status
-      def delete(resource_type_identifier, is_wait = true, is_parse_response = true)
+      def delete(resource_type_identifier=nil, is_wait = true, is_parse_response = true)
         # convert type to type identifier
-        resource_type_identifier = @model.kinds.select {
-            |kind| kind.term == resource_type_identifier
-        }.first.type_identifier if @model.kinds.select {
-            |kind| kind.term == resource_type_identifier
-        }.any?
-
         # check some basic pre-conditions
         raise "Endpoint is not connected!" unless @connected
 
-        if resource_type_identifier.nil? || resource_type_identifier == "/"
-          path = "/"
-        else
-          raise "Unknown resource identifier! #{resource_type_identifier}" unless resource_type_identifier.start_with? @endpoint
-          path = sanitize_resource_link(resource_type_identifier)
-        end
+        path       = path_for_resource_type resource_type_identifier
+        message_id = del path
 
         # make the request
-        response_value(del(path), is_wait, is_parse_response)
+        response_value(message_id, is_wait, is_parse_response)
       end
 
       # Triggers given action on a specific resource.
@@ -280,34 +317,31 @@ module Occi
       # @param [String] resource location
       # @param [String] type of action
       # @return [String] resource location
-      def trigger(resource_type_identifier, action, is_wait = true, is_parse_response = true)
-
-        # TODO: not tested
-        resource_type_identifier = @model.kinds.select {
-            |kind| kind.term == resource_type_identifier
-        }.first.type_identifier if @model.kinds.select {
-            |kind| kind.term == resource_type_identifier
-        }.any?
+      def trigger(resource_type_identifier, action_type_identifier, parameters = {},is_wait = true, is_parse_response = true)
 
         # check some basic pre-conditions
         raise "Endpoint is not connected!" unless @connected
 
-        if resource_type_identifier.nil? || resource_type_identifier == "/"
-          path = "/"
-        else
-          raise "Unknown resource identifier! #{resource_type_identifier}" unless resource_type_identifier.start_with? @endpoint
-          path = sanitize_resource_link(resource_type_identifier)
-        end
+        path = path_for_resource_type resource_type_identifier
 
         # encapsulate the acion in a collection
         collection   = Occi::Collection.new
-        scheme, term = action.split('#')
-        collection.actions << Occi::Core::Action.new(scheme + '#', term)
-
+        #scheme, term = action.split('#')
+        action = @model.get_by_id action_type_identifier
+        #action = Occi::Core::Action.new scheme + '#', term
+        collection.actions << action #Occi::Core::Action.new(scheme + '#', term)
+        #action = collection.actions.first
         #@media_type = "text/plain"
 
         # make the request
         path =  path + '?action=' + term
+
+        if parameters.any?
+          parameters.each do |key, value|
+            path += "&" + key.to_s + "=" + value.to_s
+          end
+        end
+
         response_value(post(path, collection))
       end
 
@@ -430,6 +464,14 @@ module Occi
 
       end
 
+      def get_service_mixins
+        @model.get.mixins.select { |mixin| mixin.related.select { |rel| rel.end_with? 'service'}.any? }
+      end
+
+      def get_simulation_mixins
+        @model.get.mixins.select { |mixin| mixin.related.select { |rel| rel.end_with? 'simulation'}.any? }
+      end
+
       # Retrieves available os_tpls from the model.
       #
       # @example
@@ -463,6 +505,25 @@ module Occi
 
       # private stuff --------------------------------------------------------------------------------------------------
       private
+      def path_for_resource_type(resource_type_identifier)
+        if resource_type_identifier.nil? || resource_type_identifier == "/"
+          #we got all
+          path = "/"
+        else
+          kinds = @model.kinds.select { |kind| kind.term == resource_type_identifier }
+          if kinds.any?
+            #we got an type identifier
+            path = "/" + kinds.first.type_identifier.split('#').last + "/"
+          elsif resource_type_identifier.start_with? @endpoint
+            #we got an resource link
+            path = sanitize_resource_link(resource_type_identifier)
+          else
+            raise "Unknown resource identifier! #{resource_type_identifier}"
+          end
+        end
+
+        path
+      end
 
       def parse_get(payload, metadata)
         if metadata.content_type == "text/uri-list"
@@ -477,6 +538,10 @@ module Occi
       end
 
       def parse_post(payload, metadata)
+        return URI.parse(payload).to_s
+      end
+
+      def parse_put(payload, metadata)
         return URI.parse(payload).to_s
       end
 
@@ -528,8 +593,19 @@ module Occi
         @mixins = {
             :os_tpl => [],
             :resource_tpl => [],
+            :service => [],
             :simulation => []
         }
+
+        #
+        get_service_mixins.each do |service|
+          @mixins[:service] << service.type_identifier unless service.nil? or service.type_identifier.nil?
+        end
+
+        #
+        get_simulation_mixins.each do |sim|
+          @mixins[:simulation] << sim.type_identifier unless sim.nil? or sim.type_identifier.nil?
+        end
 
         #
         get_os_templates.each do |os_tpl|
@@ -587,6 +663,9 @@ module Occi
         if @media_type == 'application/occi+json'
           message = collection.to_json
           content_type = 'application/occi+json'
+        elsif @media_type == 'text/uri-list'
+          message = collection.resources.join("/n")
+          content_type = "text/uri-list"
         else
           message = collection.to_text
           content_type = 'text/plain'
@@ -596,6 +675,45 @@ module Occi
             :routing_key  => @endpoint_queue,
             :content_type => content_type,
             :type         => "post",
+            :reply_to     => reply_queue_name,  #queue for response from the rOCCI
+            :message_id   => next_message_id,  #Identifier for message so that the client can match the answer from the rOCCI
+            :headers => {
+                :accept    => "text/uri-list",
+                :path_info => "/#{ path }",
+                :auth => {
+                    :type     => "basic",
+                    :username => "user",
+                    :password => "mypass",
+                },
+            }
+        }
+
+        publish(message, options)
+
+        return options[:message_id]
+      end
+
+      #@description
+      #@param [String] path path to the resource
+      #@param [OCCI::Collection] collection
+      def put(path, collection=nil)
+        path       = path.reverse.chomp('/').reverse
+
+        if @media_type == 'application/occi+json'
+          message = collection.to_json
+          content_type = 'application/occi+json'
+        elsif @media_type == 'text/uri-list'
+          message = collection.resources.join("/n")
+          content_type = "text/uri-list"
+        else
+          message = collection.to_text
+          content_type = 'text/plain'
+        end
+
+        options = {
+            :routing_key  => @endpoint_queue,
+            :content_type => content_type,
+            :type         => "put",
             :reply_to     => reply_queue_name,  #queue for response from the rOCCI
             :message_id   => next_message_id,  #Identifier for message so that the client can match the answer from the rOCCI
             :headers => {
