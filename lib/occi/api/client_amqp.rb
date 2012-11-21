@@ -6,7 +6,7 @@ module Occi
   module Api
     class ClientAmqp
       attr_reader :endpoint, :auth_options, :connected, :last_response_status, :channel
-      attr_accessor :media_type, :model
+      attr_accessor :media_type, :model,:thread
 
       CONNECTION_SETTING = {
           :host => '10.108.16.13', #'192.168.56.101', #'10.108.16.15', #IP of the MessageBroker (RabbitMQ)
@@ -93,7 +93,7 @@ module Occi
 
         @connected = false
 
-        Thread.new { run }
+        @thread = Thread.new { run }
 
         print "Waiting for connection amqp ..."
 
@@ -334,7 +334,7 @@ module Occi
         #@media_type = "text/plain"
 
         # make the request
-        path =  path + '?action=' + term
+        path =  path + '?action=' + action.term
 
         if parameters.any?
           parameters.each do |key, value|
