@@ -560,7 +560,17 @@ module Occi
             @replies_queue = @channel.queue(Time.now.to_f.to_s + Kernel.rand().to_s, :exclusive => true)
             @replies_queue.subscribe(&method(:handle_message))
 
-            @connected = true;
+            AMQP::Channel.queue(@endpoint_queue).status do |number_of_messages, number_of_active_consumers|
+
+              if number_of_active_consumers <= 0
+                raise "OCCI do not listen to me"
+              else
+                @connected = true;
+              end
+
+            end
+
+
           end
         rescue Exception => e
           @thread_error = true
@@ -862,7 +872,7 @@ module Occi
         raise 'Endpoint not a valid URI' if (endpoint =~ URI::ABS_URI).nil?
 
         @endpoint       = endpoint.chomp('/') + '/'
-        @endpoint_queue = "amqp.occi.#{@endpoint}"
+        @endpoint_queue = "amqp.occi2.#{@endpoint}"
       end
     end
   end

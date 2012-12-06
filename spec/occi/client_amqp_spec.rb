@@ -65,8 +65,6 @@ module Occi
         list.should have_at_least(1).list
       end
 
-=begin
-
       it "list compute" do
         list = @client.list "compute"
         list.should have_at_least(1).list
@@ -186,7 +184,7 @@ module Occi
         list = @client.list "compute"
         list.count.should == 0
       end
-=end
+
     end
   end
 end
