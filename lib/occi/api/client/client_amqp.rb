@@ -8,7 +8,7 @@ module Occi
 
     class ClientAmqp
       attr_reader :endpoint, :auth_options, :connected, :last_response_status
-      attr_accessor :media_type, :model
+      attr_accessor :media_type, :model, :channel
 
       CONNECTION_SETTING = {
           :host => 'localhost', #IP of the MessageBroker (RabbitMQ)
@@ -75,9 +75,11 @@ module Occi
       # @param [Boolean] enable autoconnect
       # @param [String] media type identifier
       # @return [Occi::Api::Client::ClientAmqp] client instance
-      def initialize(endpoint = "http://localhost:3000/", auth_options = { :type => "none" },
+      def initialize(connection_setting, endpoint = "http://localhost:3000/", auth_options = { :type => "none" },
           log_options = { :out => STDERR, :level => Occi::Log::WARN, :logger => nil },
           media_type = "text/plain")
+
+        @connection_setting = connection_setting
 
         # check the validity and canonize the endpoint URI
         prepare_endpoint endpoint
@@ -101,8 +103,10 @@ module Occi
         #TODO find a better solution for the thread issue
         while(!@thread_error && !@connected)
           #dont use sleep - it blocks the eventmachine
+          test = test
         end
 
+        print "AMQP connected"
         # get model information from the endpoint
         # and create Occi::Model instance
         set_model unless @thread_error
@@ -242,6 +246,51 @@ module Occi
         response_value(post(location, collection), is_wait, is_parse_response)
       end
 
+      def update(entity, is_wait = true, is_parse_response = true)
+        # check some basic pre-conditions
+        raise "Endpoint is not connected!" unless @connected
+        raise "#{entity} not an entity" unless entity.kind_of? Occi::Core::Entity
+
+        # is this entity valid?
+        entity.model = @model
+        entity.check
+
+        kind = entity.kind
+        raise "No kind found for #{entity}" unless kind
+
+        # get location for this kind of entity
+        location   = entity.location
+        collection = Occi::Collection.new
+
+        # is this entity a Resource or a Link?
+        collection.resources << entity if entity.kind_of? Occi::Core::Resource
+        collection.links << entity if entity.kind_of? Occi::Core::Link
+
+        # make the request
+        response_value(put(location, collection), is_wait, is_parse_response)
+      end
+
+      def addMixin(location, collection, is_wait = true, is_parse_response = true)
+        raise "Endpoint is not connected!" unless @connected
+        #raise "#{mixin} not an entity" unless mixin.kind_of? Occi::Core::Mixin
+
+        old_media_type = @media_type
+        @media_type = "text/uri-list"
+
+        response_value(post(location, collection), is_wait, is_parse_response)
+
+        @media_type = old_media_type
+      end
+
+      def registerMixin(collection)
+        raise "Endpoint is not connected!" unless @connected
+        raise "#{collection} not an entity" unless collection.kind_of? Occi::Collection
+
+        response_value(post("/-/", collection), true, true)
+
+        set_model
+      end
+
       # Deletes a resource or all resource of a certain resource type
       # from the server.
       #
@@ -282,34 +331,31 @@ module Occi
       # @param [String] resource location
       # @param [String] type of action
       # @return [String] resource location
-      def trigger(resource_type_identifier, action, is_wait = true, is_parse_response = true)
-
-        # TODO: not tested
-        resource_type_identifier = @model.kinds.select {
-            |kind| kind.term == resource_type_identifier
-        }.first.type_identifier if @model.kinds.select {
-            |kind| kind.term == resource_type_identifier
-        }.any?
+      def trigger(resource_type_identifier, action_type_identifier, parameters = {},is_wait = true, is_parse_response = true)
 
         # check some basic pre-conditions
         raise "Endpoint is not connected!" unless @connected
 
-        if resource_type_identifier.nil? || resource_type_identifier == "/"
-          path = "/"
-        else
-          raise "Unknown resource identifier! #{resource_type_identifier}" unless resource_type_identifier.start_with? @endpoint
-          path = sanitize_resource_link(resource_type_identifier)
-        end
+        path = path_for_resource_type resource_type_identifier
 
         # encapsulate the acion in a collection
         collection   = Occi::Collection.new
-        scheme, term = action.split('#')
-        collection.actions << Occi::Core::Action.new(scheme + '#', term)
-
+        #scheme, term = action.split('#')
+        action = @model.get_by_id action_type_identifier
+        #action = Occi::Core::Action.new scheme + '#', term
+        collection.actions << action #Occi::Core::Action.new(scheme + '#', term)
+        #action = collection.actions.first
         #@media_type = "text/plain"
 
         # make the request
-        path =  path + '?action=' + term
+        path =  path + '?action=' + action.term
+
+        if parameters.any?
+          parameters.each do |key, value|
+            path += "&" + key.to_s + "=" + value.to_s
+          end
+        end
+
         response_value(post(path, collection))
       end
 
@@ -357,7 +403,9 @@ module Occi
 
         # is type valid?
         if type
-          raise "Unknown mixin type! [#{type}]" unless @mixins.has_key? type.to_sym
+          unless @mixins.has_key?(type.to_sym) || get_mixin(type).any?
+            raise "Unknown mixin type! [#{type}]"
+          end
         end
 
         # TODO: extend this code to support multiple matches and regex filters
@@ -391,7 +439,7 @@ module Occi
           name = "#" + name
           if type
             # return the first match with the selected type
-            @mixins[type.to_sym].select {
+            get_mixin(type).select {
                 |mixin| mixin.to_s.reverse.start_with? name.reverse
             }.first
           else
@@ -430,6 +478,11 @@ module Occi
           raise "Unknown resource type! [#{resource_type}]"
         end
 
+      end
+
+      def get_mixin(type)
+        mixins = @model.get.mixins.select { |mixin| mixin.related.select { |rel| rel.end_with? type }.any? }
+        mixins
       end
 
       # Retrieves available os_tpls from the model.
@@ -488,7 +541,7 @@ module Occi
 
       def run
         begin
-          AMQP.start(CONNECTION_SETTING) do |connection, open_ok|
+          AMQP.start(@connection_setting) do |connection, open_ok|
             @channel  = AMQP::Channel.new(connection)
             @exchange = @channel.default_exchange
 
@@ -557,6 +610,34 @@ module Occi
         raise "Resource link #{resource_link} is not valid!" unless resource_link.start_with? @endpoint
 
         resource_link.gsub @endpoint, '/'
+      end
+
+      # @describe find the path for the resource type identifier
+      #
+      # @example
+      #
+      #
+      # @param [String] resource_type_identifier
+      #
+      # @return [String]
+      def path_for_resource_type(resource_type_identifier)
+        if resource_type_identifier.nil? || resource_type_identifier == "/"
+          #we got all
+          path = "/"
+        else
+          kinds = @model.kinds.select { |kind| kind.term == resource_type_identifier }
+          if kinds.any?
+            #we got an type identifier
+            path = "/" + kinds.first.type_identifier.split('#').last + "/"
+          elsif resource_type_identifier.start_with? @endpoint
+            #we got an resource link
+            path = sanitize_resource_link(resource_type_identifier)
+          else
+            raise "Unknown resource identifier! #{resource_type_identifier}"
+          end
+        end
+
+        path
       end
 
       #TODO filter
