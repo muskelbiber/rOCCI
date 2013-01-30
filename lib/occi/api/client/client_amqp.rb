@@ -288,7 +288,16 @@ module Occi
 
         response_value(post("/-/", collection), true, true)
 
-        set_model
+        refresh
+      end
+
+      def unregisterMixin(collection)
+        raise "Endpoint is not connected!" unless @connected
+        raise "#{collection} not an entity" unless collection.kind_of? Occi::Collection
+
+        response_value(del("/-/", collection), true, true)
+
+        refresh
       end
 
       # Deletes a resource or all resource of a certain resource type
@@ -709,9 +718,22 @@ module Occi
         # remove the leading slash
         path.gsub!(/\A\//, '')
 
+        message = ""
+        content_type = "text/plain"
+
+        if !filter.nil? && (filter.kind_of? Occi::Collection)
+          if @media_type == 'application/occi+json'
+            message = filter.to_json
+            content_type = 'application/occi+json'
+          else
+            message = filter.to_text
+            content_type = 'text/plain'
+          end
+        end
+
         options = {
             :routing_key  => @endpoint_queue,
-            :content_type => "text/plain",
+            :content_type => content_type,
             :type         => "delete",
             :reply_to     => reply_queue_name,  #queue for response from the rOCCI
             :message_id   => next_message_id,  #Identifier for message so that the client can match the answer from the rOCCI
@@ -726,7 +748,7 @@ module Occi
             }
         }
 
-        publish('', options)
+        publish(message, options)
 
         return options[:message_id]
       end
