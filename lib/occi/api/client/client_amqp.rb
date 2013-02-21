@@ -661,7 +661,8 @@ module Occi
             :message_id   => next_message_id,
             :headers => {
                 :accept    => is_uri_list ? "text/uri-list" : @media_type,
-                :path_info => "/" + path.gsub(/\A\//, '')
+                :path_info => "/" + path.gsub(/\A\//, ''),
+                :auth => @auth_options
             }
         }
 
@@ -693,11 +694,7 @@ module Occi
             :headers => {
                 :accept    => "text/uri-list",
                 :path_info => "/#{ path }",
-                :auth => {
-                    :type     => "basic",
-                    :username => "user",
-                    :password => "mypass",
-                },
+                :auth => @auth_options
             }
         }
 
@@ -740,11 +737,7 @@ module Occi
             :headers => {
                 :accept    => @media_type,
                 :path_info => "/#{ path }",
-                :auth => {
-                    :type     => "basic",
-                    :username => "user",
-                    :password => "mypass",
-                },
+                :auth => @auth_options
             }
         }
 
@@ -808,13 +801,23 @@ module Occi
       # @param [Hash] authentication options
       def change_auth(auth_options)
         @auth_options = auth_options
-
         case @auth_options[:type]
-          when "none", nil
-            # do nothing
-          else
-            raise ArgumentError, "Unknown AUTH method [#{@auth_options[:type]}]!"
+        when "basic"
+            # set up basic auth
+            raise ArgumentError, "Missing required options 'username' and 'password' for basic auth!" unless @auth_options[:username] and @auth_options[:password]
+        when "digest"
+           # set up digest auth
+           raise ArgumentError, "Missing required options 'username' and 'password' for digest auth!" unless @auth_options[:username] and @auth_options[:password]
+        when "x509"
+           # set up pem and optionally pem_password and ssl_ca_path
+           raise ArgumentError, "Missing required option 'user_cert' for x509 auth!" unless @auth_options[:user_cert]
+           raise ArgumentError, "The file specified in 'user_cert' does not exist!" unless File.exists? @auth_options[:user_cert]
+        when "none", nil
+           # do nothing
+        else
+          raise ArgumentError, "Unknown AUTH method [#{@auth_options[:type]}]!"
         end
+
       end
 
       def handle_channel_exception(channel, channel_close)
