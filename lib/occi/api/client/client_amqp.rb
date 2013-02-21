@@ -605,7 +605,6 @@ module Occi
                 :accept    => "text/uri-list",
                 :path_info => "/#{ path }",
                 :auth => @auth_options
-                },
             }
         }
 
