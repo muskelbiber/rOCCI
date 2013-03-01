@@ -267,7 +267,7 @@ module Occi
         collection.links << entity if entity.kind_of? Occi::Core::Link
 
         # make the request
-        response_value(put(location, collection), is_wait, is_parse_response)
+        response_value(post(location, collection), is_wait, is_parse_response)
       end
 
       def addMixin(location, collection, is_wait = true, is_parse_response = true)
