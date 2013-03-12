@@ -3,6 +3,7 @@ require 'rubygems'
 require 'set'
 require 'hashie/mash'
 
+require 'active_support'
 require 'active_support/json'
 require 'active_support/inflector'
 require 'active_support/notifications'
